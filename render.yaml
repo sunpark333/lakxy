@@ -1,0 +1,17 @@
+services:
+  - type: worker
+    name: telegram-forward-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: SUPER_ADMINS
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: LOG_CHANNEL
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
