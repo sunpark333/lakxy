@@ -1,6 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 from pymongo import MongoClient
+from datetime import datetime, timezone
 
 from config import SUPER_ADMINS, MONGO_URI, DB_NAME
 
@@ -29,7 +30,7 @@ async def add_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = int(context.args[0])
         col_users.update_one(
             {"_id": user_id},
-            {"$set": {"added_by": update.effective_user.id, "timestamp": update.message.date}},
+            {"$set": {"added_by": update.effective_user.id, "timestamp": datetime.now(timezone.utc)}},
             upsert=True
         )
         await update.message.reply_text(f"✅ User {user_id} ko access de diya gaya.")
