@@ -15,3 +15,7 @@ DB_NAME = "telegram_forward_bot"
 # Bot settings
 MAX_REPLACEMENTS = 5000000
 MAX_SYNC_MESSAGES = 5000000
+# Rate limiting settings
+MAX_SYNC_MESSAGES = 1000000 # Reduce if needed
+MIN_DELAY_BETWEEN_MESSAGES = 2.0  # Minimum seconds between messages
+MAX_DELAY_BETWEEN_MESSAGES = 5.0  # Maximum seconds during errors
