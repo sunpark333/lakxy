@@ -1,6 +1,5 @@
 import os
 import logging
-import json
 import threading
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -31,23 +30,24 @@ logger = logging.getLogger(__name__)
 pending_requests = {}
 
 class HealthHandler(BaseHTTPRequestHandler):
-    """HTTP handler for health checks"""
+    """Simple HTTP handler for health checks"""
+    
     def do_GET(self):
-        if self.path == '/health':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            response = {
-                "status": "healthy", 
-                "service": "telegram-forward-bot",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            self.wfile.write(json.dumps(response).encode())
-        elif self.path == '/':
+        if self.path == '/':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
             self.end_headers()
-            self.wfile.write(b'Telegram Forward Bot is running!')
+            self.wfile.write(b'Telegram Forward Bot is running')
+        elif self.path == '/ping':
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'pong')
+        elif self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'healthy')
         else:
             self.send_response(404)
             self.end_headers()
@@ -57,22 +57,24 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 def start_health_server():
-    """Start a simple HTTP server for health checks"""
+    """Start HTTP server for health checks"""
     try:
-        port = int(os.getenv("PORT", "8080"))
+        # Render provides PORT environment variable
+        port = int(os.environ.get('PORT', '8080'))
         server = HTTPServer(('0.0.0.0', port), HealthHandler)
         
         def run_server():
-            logger.info(f"Health check server started on port {port}")
+            logger.info(f"Health server started on port {port}")
+            print(f"✅ Health check endpoint: http://0.0.0.0:{port}/ping")
+            print(f"✅ Root endpoint: http://0.0.0.0:{port}/")
             server.serve_forever()
         
-        # Start server in a separate thread
         thread = threading.Thread(target=run_server, daemon=True)
         thread.start()
-        return True
+        return port
     except Exception as e:
         logger.error(f"Failed to start health server: {e}")
-        return False
+        return None
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command handler"""
@@ -352,12 +354,12 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Main function to start the bot"""
     # Start health check server (for Render)
-    health_server_started = start_health_server()
+    port = start_health_server()
     
-    if health_server_started:
-        logger.info("Health check server started successfully")
+    if port:
+        logger.info(f"Health server started on port {port}")
     else:
-        logger.warning("Health check server failed to start")
+        logger.warning("Health server failed to start")
     
     # Create application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -382,11 +384,14 @@ def main():
     # Start bot
     logger.info("Bot is starting...")
     print("=" * 50)
-    print("Telegram Forward Bot is running!")
-    print(f"Health check endpoint: http://0.0.0.0:{os.getenv('PORT', '8080')}/health")
+    print("🤖 Telegram Forward Bot Started!")
+    print(f"PORT: {port}")
     print("=" * 50)
     
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    try:
+        app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    except Exception as e:
+        logger.error(f"Bot failed to start: {e}")
 
 if __name__ == "__main__":
     main()
