@@ -30,212 +30,30 @@ logger = logging.getLogger(__name__)
 # Store forward requests temporarily
 pending_requests = {}
 
-# Bot status tracking
-bot_status = {
-    "start_time": datetime.utcnow(),
-    "total_requests": 0,
-    "active_jobs": 0
-}
-
 class HealthHandler(BaseHTTPRequestHandler):
-    """HTTP handler for health checks and monitoring"""
-    
+    """HTTP handler for health checks"""
     def do_GET(self):
         if self.path == '/health':
-            self._handle_health()
-        elif self.path == '/status':
-            self._handle_status()
-        elif self.path == '/':
-            self._handle_root()
-        elif self.path == '/ping':
-            self._handle_ping()
-        elif self.path == '/uptime':
-            self._handle_uptime()
-        else:
-            self._handle_404()
-    
-    def _handle_health(self):
-        """Comprehensive health check for UptimeRobot"""
-        try:
-            uptime = (datetime.utcnow() - bot_status["start_time"]).total_seconds()
-            
-            health_data = {
-                "status": "healthy",
-                "service": "telegram-forward-bot",
-                "timestamp": datetime.utcnow().isoformat(),
-                "uptime_seconds": uptime,
-                "total_requests": bot_status["total_requests"],
-                "active_jobs": len(forwarding_manager.active_jobs),
-                "pending_requests": len(pending_requests),
-                "bot_status": "running"
-            }
-            
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps(health_data, indent=2).encode())
-            
-        except Exception as e:
-            self.send_response(500)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            error_data = {
-                "status": "unhealthy",
-                "error": str(e),
+            response = {
+                "status": "healthy", 
+                "service": "telegram-forward-bot",
                 "timestamp": datetime.utcnow().isoformat()
             }
-            self.wfile.write(json.dumps(error_data).encode())
-    
-    def _handle_status(self):
-        """Detailed status endpoint"""
-        uptime = datetime.utcnow() - bot_status["start_time"]
-        days = uptime.days
-        hours, remainder = divmod(uptime.seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        
-        status_data = {
-            "service": "Telegram Forward Bot",
-            "status": "🟢 Running",
-            "started_at": bot_status["start_time"].isoformat(),
-            "uptime": f"{days}d {hours}h {minutes}m {seconds}s",
-            "uptime_seconds": uptime.total_seconds(),
-            "statistics": {
-                "total_requests": bot_status["total_requests"],
-                "active_jobs": len(forwarding_manager.active_jobs),
-                "pending_requests": len(pending_requests),
-                "super_admins": len(SUPER_ADMINS),
-                "bot_token_set": bool(BOT_TOKEN and BOT_TOKEN != "YOUR_BOT_TOKEN_HERE")
-            },
-            "endpoints": {
-                "/health": "Comprehensive health check",
-                "/status": "Detailed status information",
-                "/ping": "Simple ping response",
-                "/uptime": "Uptime information"
-            }
-        }
-        
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(status_data, indent=2).encode())
-    
-    def _handle_ping(self):
-        """Simple ping endpoint - returns plain text"""
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b'pong')
-    
-    def _handle_uptime(self):
-        """Uptime information"""
-        uptime = datetime.utcnow() - bot_status["start_time"]
-        days = uptime.days
-        hours, remainder = divmod(uptime.seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        
-        uptime_data = {
-            "uptime": {
-                "days": days,
-                "hours": hours,
-                "minutes": minutes,
-                "seconds": seconds,
-                "total_seconds": uptime.total_seconds()
-            },
-            "start_time": bot_status["start_time"].isoformat(),
-            "current_time": datetime.utcnow().isoformat()
-        }
-        
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(uptime_data, indent=2).encode())
-    
-    def _handle_root(self):
-        """Root endpoint with HTML info page"""
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Telegram Forward Bot</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <style>
-                body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
-                .status {{ padding: 10px; border-radius: 5px; margin: 10px 0; }}
-                .healthy {{ background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }}
-                .info {{ background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }}
-                .endpoints {{ margin-top: 20px; }}
-                .endpoint {{ padding: 5px; background: #f8f9fa; margin: 5px 0; border-left: 4px solid #007bff; }}
-                h1 {{ color: #333; }}
-                a {{ color: #007bff; text-decoration: none; }}
-                a:hover {{ text-decoration: underline; }}
-            </style>
-        </head>
-        <body>
-            <h1>🤖 Telegram Forward Bot</h1>
-            
-            <div class="status healthy">
-                <strong>Status:</strong> 🟢 Running
-            </div>
-            
-            <div class="status info">
-                <strong>Uptime:</strong> {(datetime.utcnow() - bot_status["start_time"]).days} days, 
-                {divmod((datetime.utcnow() - bot_status["start_time"]).seconds, 3600)[0]} hours, 
-                {divmod(divmod((datetime.utcnow() - bot_status["start_time"]).seconds, 3600)[1], 60)[0]} minutes
-            </div>
-            
-            <h2>📊 Statistics</h2>
-            <ul>
-                <li>Total Requests: {bot_status["total_requests"]}</li>
-                <li>Active Jobs: {len(forwarding_manager.active_jobs)}</li>
-                <li>Pending Requests: {len(pending_requests)}</li>
-                <li>Super Admins: {len(SUPER_ADMINS)}</li>
-            </ul>
-            
-            <div class="endpoints">
-                <h2>🔗 Available Endpoints</h2>
-                <div class="endpoint"><a href="/health">/health</a> - Comprehensive health check (JSON)</div>
-                <div class="endpoint"><a href="/status">/status</a> - Detailed status information (JSON)</div>
-                <div class="endpoint"><a href="/ping">/ping</a> - Simple ping response (text)</div>
-                <div class="endpoint"><a href="/uptime">/uptime</a> - Uptime information (JSON)</div>
-            </div>
-            
-            <h2>📝 For UptimeRobot</h2>
-            <p>Use any of these endpoints for monitoring:</p>
-            <ul>
-                <li><code>https://your-render-url.onrender.com/health</code></li>
-                <li><code>https://your-render-url.onrender.com/ping</code></li>
-            </ul>
-            
-            <hr>
-            <p><small>Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</small></p>
-        </body>
-        </html>
-        """
-        
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html')
-        self.end_headers()
-        self.wfile.write(html.encode())
-    
-    def _handle_404(self):
-        """Handle 404 errors"""
-        self.send_response(404)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        error_data = {
-            "error": "Endpoint not found",
-            "available_endpoints": [
-                "/",
-                "/health",
-                "/status",
-                "/ping",
-                "/uptime"
-            ]
-        }
-        self.wfile.write(json.dumps(error_data).encode())
+            self.wfile.write(json.dumps(response).encode())
+        elif self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'Telegram Forward Bot is running!')
+        else:
+            self.send_response(404)
+            self.end_headers()
     
     def log_message(self, format, *args):
-        # Disable access logging to reduce noise
+        # Disable access logging
         pass
 
 def start_health_server():
@@ -352,9 +170,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Track request
-    bot_status["total_requests"] += 1
-    
     # Store message for potential forwarding
     message_text = update.message.text
     
@@ -410,9 +225,6 @@ async def forward_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(user_id):
         await update.message.reply_text("❌ You are not authorized to use this bot.")
         return
-    
-    # Track request
-    bot_status["total_requests"] += 1
     
     # Check if replying to a message
     if not update.message.reply_to_message:
@@ -473,9 +285,6 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
-    # Track request
-    bot_status["total_requests"] += 1
-    
     # Cancel forwarding if active
     if forwarding_manager.active_jobs.get(user_id):
         forwarding_manager.active_jobs[user_id] = False
@@ -498,9 +307,6 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(user_id):
         await update.message.reply_text("❌ You are not authorized.")
         return
-    
-    # Track request
-    bot_status["total_requests"] += 1
     
     # Get user's stats from database
     from pymongo import MongoClient
@@ -530,45 +336,6 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats_text += f"*Totals:* {total_success}✅ / {total_failed}❌"
     
     await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bot status command"""
-    if update.effective_chat.type != "private":
-        return
-    
-    user_id = update.effective_user.id
-    
-    if not is_authorized(user_id):
-        await update.message.reply_text("❌ You are not authorized.")
-        return
-    
-    uptime = datetime.utcnow() - bot_status["start_time"]
-    days = uptime.days
-    hours, remainder = divmod(uptime.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    
-    status_text = f"""
-🤖 *Bot Status Report*
-
-*Uptime:* {days}d {hours}h {minutes}m {seconds}s
-*Started:* {bot_status["start_time"].strftime('%Y-%m-%d %H:%M:%S UTC')}
-
-*Statistics:*
-• Total Requests: {bot_status["total_requests"]}
-• Active Jobs: {len(forwarding_manager.active_jobs)}
-• Pending Requests: {len(pending_requests)}
-• Super Admins: {len(SUPER_ADMINS)}
-
-*HTTP Endpoints:*
-• `/health` - Health check
-• `/status` - Detailed status
-• `/ping` - Simple ping
-• `/uptime` - Uptime info
-
-*Bot is:* 🟢 Running
-"""
-    
-    await update.message.reply_text(status_text, parse_mode=ParseMode.MARKDOWN)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors"""
@@ -601,7 +368,6 @@ def main():
     app.add_handler(CommandHandler("forward", forward_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
-    app.add_handler(CommandHandler("status", status_cmd))  # New status command
     
     # Add auth handlers
     for handler in get_auth_handlers():
@@ -615,18 +381,10 @@ def main():
     
     # Start bot
     logger.info("Bot is starting...")
-    print("=" * 60)
-    print("🤖 TELEGRAM FORWARD BOT")
-    print("=" * 60)
+    print("=" * 50)
+    print("Telegram Forward Bot is running!")
     print(f"Health check endpoint: http://0.0.0.0:{os.getenv('PORT', '8080')}/health")
-    print(f"Status endpoint: http://0.0.0.0:{os.getenv('PORT', '8080')}/status")
-    print(f"Simple ping: http://0.0.0.0:{os.getenv('PORT', '8080')}/ping")
-    print("=" * 60)
-    print("For UptimeRobot monitoring, use:")
-    print(f"https://your-render-url.onrender.com/ping")
-    print("or")
-    print(f"https://your-render-url.onrender.com/health")
-    print("=" * 60)
+    print("=" * 50)
     
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
