@@ -45,11 +45,14 @@ class ForwardingManager:
         if doc:
             return doc["thread_id"]
         
+        # 📌 POINT 2: Add prefix and emoji to topic name
+        formatted_topic_name = f"📌 topic: {topic_name}"[:128]
+        
         # Create new forum topic
         try:
             topic = await bot.create_forum_topic(
                 chat_id=chat_id,
-                name=topic_name[:128]
+                name=formatted_topic_name
             )
             thread_id = topic.message_thread_id
             
@@ -57,15 +60,39 @@ class ForwardingManager:
             col_topics.insert_one({
                 "chat_id": chat_id,
                 "topic_name": topic_name,
+                "formatted_topic_name": formatted_topic_name,
                 "thread_id": thread_id,
                 "created_at": datetime.now(timezone.utc)
             })
             
-            logger.info(f"Created new topic '{topic_name}' in chat {chat_id}")
+            logger.info(f"Created new topic '{formatted_topic_name}' in chat {chat_id}")
+            
+            # 📌 POINT 3: Send and pin first message in topic
+            try:
+                # Send a welcome message in the new topic
+                welcome_msg = await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"📌 **{topic_name}** - Topic started",
+                    message_thread_id=thread_id,
+                    parse_mode=ParseMode.MARKDOWN,
+                    disable_notification=True
+                )
+                
+                # Pin the welcome message
+                await bot.pin_chat_message(
+                    chat_id=chat_id,
+                    message_id=welcome_msg.message_id,
+                    disable_notification=True
+                )
+                
+                logger.info(f"Pinned first message in topic '{formatted_topic_name}'")
+            except Exception as pin_error:
+                logger.warning(f"Could not pin message in topic: {pin_error}")
+            
             return thread_id
             
         except Exception as e:
-            logger.error(f"Failed to create topic '{topic_name}': {e}")
+            logger.error(f"Failed to create topic '{formatted_topic_name}': {e}")
             return None
     
     async def forward_message(self, bot, source_chat_id: int, message_id: int,
@@ -104,7 +131,8 @@ class ForwardingManager:
             if topic_name:
                 thread_id = await self.get_or_create_topic(bot, target_chat_id, topic_name)
             
-            # Apply replacements to caption
+            # 📌 POINT 1: Hidden links remove karne ka feature hata diya
+            # Apply replacements to caption (sirf user ke bataye replacements apply honge)
             if caption and replacements:
                 caption = apply_replacements(caption, replacements)
             
