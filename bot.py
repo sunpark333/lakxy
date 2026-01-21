@@ -1,7 +1,8 @@
 import os
 import logging
 import threading
-from datetime import datetime
+import asyncio
+from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram import Update
@@ -103,6 +104,7 @@ https://t.me/c/3586558422/26787
 /forward - Start forwarding (reply to formatted message)
 /cancel - Cancel ongoing forwarding
 /stats - Show forwarding statistics
+/status - Check current job status
 /help - Show detailed help
 /adduser - Add authorized user (admin only)
 /listusers - List authorized users (admin only)
@@ -189,7 +191,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pending_requests[user_id] = {
                 'data': request_data,
                 'message_id': update.message.message_id,
-                'timestamp': datetime.utcnow()
+                'timestamp': datetime.now(timezone.utc)
             }
             
             # Send confirmation
@@ -261,7 +263,7 @@ async def forward_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Check if user has too many active jobs (limit to 3 concurrent jobs)
-    active_jobs_count = sum(1 for uid, job in forwarding_manager.active_jobs.items() if uid == user_id and job)
+    active_jobs_count = len(forwarding_manager.get_user_active_jobs(user_id))
     if active_jobs_count >= 3:
         await update.message.reply_text(
             "⚠️ You already have 3 active forwarding jobs.\n"
@@ -274,7 +276,7 @@ async def forward_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔄 Starting forwarding process...")
         
         # Create a unique job ID for this user
-        job_id = f"{user_id}_{int(datetime.now().timestamp())}"
+        job_id = f"{user_id}_{int(datetime.now(timezone.utc).timestamp())}"
         
         # Start forwarding in background
         asyncio.create_task(
@@ -303,17 +305,13 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     # Cancel all user's forwarding jobs
-    cancelled = False
-    for uid in list(forwarding_manager.active_jobs.keys()):
-        if uid == user_id and forwarding_manager.active_jobs.get(uid):
-            forwarding_manager.active_jobs[uid] = False
-            cancelled = True
-    
-    if cancelled:
+    active_jobs = forwarding_manager.get_user_active_jobs(user_id)
+    if active_jobs:
+        forwarding_manager.stop_all_user_jobs(user_id)
         # Clear pending request if exists
         if user_id in pending_requests:
             del pending_requests[user_id]
-        await update.message.reply_text("🛑 All your forwarding jobs cancelled.")
+        await update.message.reply_text(f"🛑 Cancelled {len(active_jobs)} active job(s).")
     else:
         await update.message.reply_text("ℹ️ No active forwarding jobs found.")
 
@@ -370,7 +368,6 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     from pymongo import MongoClient
     from config import MONGO_URI, DB_NAME
-    from datetime import datetime, timezone
     
     client = MongoClient(MONGO_URI)
     db = client[DB_NAME]
@@ -382,7 +379,10 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": {"$in": ["started", "processing"]}
     }).sort("start_time", -1).limit(5))
     
-    if not user_jobs:
+    # Get user's active jobs from manager
+    active_jobs = forwarding_manager.get_user_active_jobs(user_id)
+    
+    if not user_jobs and not active_jobs:
         await update.message.reply_text("ℹ️ No active jobs found.")
         return
     
@@ -396,8 +396,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_text += f"  Progress: {job.get('progress', '0')}%\n\n"
     
     # Count active jobs
-    active_count = sum(1 for uid, job in forwarding_manager.active_jobs.items() if uid == user_id and job)
-    status_text += f"*Active tasks:* {active_count}/3"
+    status_text += f"*Active tasks:* {len(active_jobs)}/3"
     
     await update.message.reply_text(status_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -415,8 +414,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Main function to start the bot"""
-    import asyncio
-    
     # Start health check server (for Render)
     port = start_health_server()
     
