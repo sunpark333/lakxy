@@ -14,6 +14,7 @@ from telegram.ext import (
     ContextTypes
 )
 from telegram.constants import ParseMode
+from telegram.error import RetryAfter
 
 from config import BOT_TOKEN, SUPER_ADMINS
 from auth import get_auth_handlers, is_authorized
@@ -103,7 +104,6 @@ https://t.me/c/3586558422/26787
 /start - Show this help
 /forward - Start forwarding (reply to formatted message)
 /cancel - Cancel ongoing forwarding
-/stats - Show forwarding statistics
 /status - Check current job status
 /help - Show detailed help
 /adduser - Add authorized user (admin only)
@@ -279,15 +279,24 @@ async def forward_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         job_id = f"{user_id}_{int(datetime.now(timezone.utc).timestamp())}"
         
         # Start forwarding in background
-        asyncio.create_task(
+        task = asyncio.create_task(
             forwarding_manager.process_forward_request(
                 update=update,
                 context=context,
                 request_data=request_info['data'],
                 original_message=update.message.reply_to_message,
-                job_id=job_id
+                job_id=job_id,
+                user_id=user_id
             )
         )
+        
+        # Store the task
+        forwarding_manager.user_tasks[user_id] = forwarding_manager.user_tasks.get(user_id, [])
+        forwarding_manager.user_tasks[user_id].append({
+            'task': task,
+            'job_id': job_id,
+            'start_time': datetime.now(timezone.utc)
+        })
         
         # Clear pending request
         if user_id in pending_requests:
@@ -304,56 +313,19 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
-    # Cancel all user's forwarding jobs
-    active_jobs = forwarding_manager.get_user_active_jobs(user_id)
-    if active_jobs:
-        forwarding_manager.stop_all_user_jobs(user_id)
-        # Clear pending request if exists
-        if user_id in pending_requests:
-            del pending_requests[user_id]
-        await update.message.reply_text(f"🛑 Cancelled {len(active_jobs)} active job(s).")
+    # Check if user has pending request
+    if user_id in pending_requests:
+        del pending_requests[user_id]
+        await update.message.reply_text("✅ Pending request cancelled.")
+        return
+    
+    # Cancel all user's forwarding tasks
+    cancelled_count = forwarding_manager.stop_all_user_jobs(user_id)
+    
+    if cancelled_count > 0:
+        await update.message.reply_text(f"🛑 Cancelled {cancelled_count} active job(s).")
     else:
         await update.message.reply_text("ℹ️ No active forwarding jobs found.")
-
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show statistics"""
-    if update.effective_chat.type != "private":
-        return
-    
-    user_id = update.effective_user.id
-    
-    if not is_authorized(user_id):
-        await update.message.reply_text("❌ You are not authorized.")
-        return
-    
-    # Get user's stats from database
-    from pymongo import MongoClient
-    from config import MONGO_URI, DB_NAME
-    
-    client = MongoClient(MONGO_URI)
-    db = client[DB_NAME]
-    col_stats = db["forward_stats"]
-    
-    user_stats = list(col_stats.find({"user_id": user_id}).sort("timestamp", -1).limit(5))
-    
-    if not user_stats:
-        await update.message.reply_text("📊 No statistics available yet.")
-        return
-    
-    stats_text = "📊 *Your Forwarding Statistics*\n\n"
-    
-    for stat in user_stats:
-        stats_text += f"• *Date:* {stat['timestamp'].strftime('%Y-%m-%d %H:%M')}\n"
-        stats_text += f"  Messages: {stat.get('successful', 0)}✅ / {stat.get('failed', 0)}❌\n"
-        stats_text += f"  Target: `{stat.get('target_chat', 'N/A')}`\n"
-        stats_text += f"  Range: {stat.get('message_range', 'N/A')}\n\n"
-    
-    total_success = sum(s.get('successful', 0) for s in user_stats)
-    total_failed = sum(s.get('failed', 0) for s in user_stats)
-    
-    stats_text += f"*Totals:* {total_success}✅ / {total_failed}❌"
-    
-    await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show current status of user's jobs"""
@@ -373,30 +345,50 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = client[DB_NAME]
     col_jobs = db["forward_jobs"]
     
-    # Get active jobs
+    # Get active jobs from database
     user_jobs = list(col_jobs.find({
         "user_id": user_id,
         "status": {"$in": ["started", "processing"]}
     }).sort("start_time", -1).limit(5))
     
-    # Get user's active jobs from manager
-    active_jobs = forwarding_manager.get_user_active_jobs(user_id)
+    # Get user's active tasks from manager
+    active_tasks = forwarding_manager.get_user_active_jobs(user_id)
     
-    if not user_jobs and not active_jobs:
+    if not user_jobs and not active_tasks:
         await update.message.reply_text("ℹ️ No active jobs found.")
         return
     
     status_text = "🔄 *Your Active Jobs*\n\n"
     
-    for job in user_jobs:
-        elapsed = (datetime.now(timezone.utc) - job.get('start_time', datetime.now(timezone.utc))).seconds
-        status_text += f"• Job ID: `{job.get('_id', 'N/A')}`\n"
-        status_text += f"  Status: {job.get('status', 'Unknown')}\n"
-        status_text += f"  Running: {elapsed} seconds\n"
-        status_text += f"  Progress: {job.get('progress', '0')}%\n\n"
+    if user_jobs:
+        for job in user_jobs:
+            elapsed = (datetime.now(timezone.utc) - job.get('start_time', datetime.now(timezone.utc))).seconds
+            progress = job.get('progress', 0)
+            
+            # Calculate estimated time remaining if we have progress
+            eta = ""
+            if progress > 0 and elapsed > 0:
+                total_time_estimated = (elapsed * 100) / progress
+                remaining = total_time_estimated - elapsed
+                if remaining > 0:
+                    eta = f" (~{int(remaining//60)} min {int(remaining%60)} sec remaining)"
+            
+            status_text += f"• *Job ID:* `{job.get('_id', 'N/A')}`\n"
+            status_text += f"  *Status:* {job.get('status', 'Unknown')}\n"
+            status_text += f"  *Progress:* {progress}%\n"
+            status_text += f"  *Running:* {elapsed} seconds{eta}\n"
+            
+            if job.get('current_message'):
+                status_text += f"  *Current:* {job.get('current_message')}\n"
+            
+            status_text += "\n"
     
-    # Count active jobs
-    status_text += f"*Active tasks:* {len(active_jobs)}/3"
+    # Show active task count
+    status_text += f"*Active tasks in memory:* {len(active_tasks)}/3"
+    
+    # Show pending request if exists
+    if user_id in pending_requests:
+        status_text += "\n\n📝 *You have a pending request waiting for /forward*"
     
     await update.message.reply_text(status_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -404,6 +396,21 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors"""
     logger.error(f"Update {update} caused error {context.error}")
     
+    # Handle rate limiting
+    if isinstance(context.error, RetryAfter):
+        retry_after = context.error.retry_after
+        logger.warning(f"Rate limited. Retry after {retry_after} seconds")
+        
+        if update and update.effective_chat:
+            try:
+                await update.effective_message.reply_text(
+                    f"⚠️ Rate limit reached. Please wait {retry_after} seconds before trying again."
+                )
+            except:
+                pass
+        return
+    
+    # Handle other errors
     if update and update.effective_chat:
         try:
             await update.effective_message.reply_text(
@@ -430,7 +437,6 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("forward", forward_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
-    app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     
     # Add auth handlers
@@ -451,7 +457,8 @@ def main():
     print("=" * 50)
     print("🤖 Telegram Forward Bot Started!")
     print("✅ Features: Multi-tasking, Auto-pin, Fixed Commands")
-    print(f"📍 PORT: {port}")
+    print("✅ Fixed: Cancel command, Removed /stats, Rate limiting handled")
+    print(f"📍 PORT: {port if port else 'Not started'}")
     print("=" * 50)
     
     try:
