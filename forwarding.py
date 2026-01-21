@@ -37,7 +37,9 @@ class ForwardingManager:
     
     def get_user_active_jobs(self, user_id: int) -> List[str]:
         """Get list of active job IDs for a user"""
-        return [job_id for job_id, is_active in self.active_jobs.get(user_id, {}).items() if is_active]
+        if user_id in self.active_jobs:
+            return [job_id for job_id, is_active in self.active_jobs[user_id].items() if is_active]
+        return []
     
     def is_job_active(self, user_id: int, job_id: str) -> bool:
         """Check if a specific job is active"""
