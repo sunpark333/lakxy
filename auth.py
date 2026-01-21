@@ -65,6 +65,7 @@ def is_authorized(user_id: int) -> bool:
     return col_users.find_one({"_id": user_id}) is not None
 
 def get_auth_handlers():
+    """Get authentication command handlers"""
     return [
         CommandHandler("adduser", add_user_cmd),
         CommandHandler("listusers", list_users_cmd),
