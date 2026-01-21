@@ -104,6 +104,8 @@ https://t.me/c/3586558422/26787
 /cancel - Cancel ongoing forwarding
 /stats - Show forwarding statistics
 /help - Show detailed help
+/adduser - Add authorized user (admin only)
+/listusers - List authorized users (admin only)
 
 ⚠️ *Note:* You need to be authorized to use this bot.
 """
@@ -146,8 +148,10 @@ https://t.me/c/1234567890/200
 • Bot must be admin in target group
 • Target group must be a supergroup
 • Forum topics will be created automatically from "Topic:" in captions
+• First message in each topic will be pinned automatically
 • Maximum 5000000 messages per request
 • Failed messages will be skipped
+• Multiple forwarding jobs can run simultaneously
 
 *Troubleshooting:*
 • Make sure links are valid
@@ -212,7 +216,7 @@ To cancel, use `/cancel`
         except Exception as e:
             logger.error(f"Error parsing request: {e}")
             await update.message.reply_text(
-                "❌ Invalid format. Please check the format and try again.\n"
+                f"❌ Invalid format. Error: {str(e)}\n"
                 "Use /help to see the correct format."
             )
 
@@ -256,20 +260,31 @@ async def forward_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check if already processing
-    if forwarding_manager.active_jobs.get(user_id):
-        await update.message.reply_text("⚠️ You already have an active forwarding job.")
+    # Check if user has too many active jobs (limit to 3 concurrent jobs)
+    active_jobs_count = sum(1 for uid, job in forwarding_manager.active_jobs.items() if uid == user_id and job)
+    if active_jobs_count >= 3:
+        await update.message.reply_text(
+            "⚠️ You already have 3 active forwarding jobs.\n"
+            "Please wait for one to complete before starting another."
+        )
         return
     
-    # Start forwarding
+    # Start forwarding as a separate task
     try:
         await update.message.reply_text("🔄 Starting forwarding process...")
         
-        await forwarding_manager.process_forward_request(
-            update=update,
-            context=context,
-            request_data=request_info['data'],
-            original_message=update.message.reply_to_message
+        # Create a unique job ID for this user
+        job_id = f"{user_id}_{int(datetime.now().timestamp())}"
+        
+        # Start forwarding in background
+        asyncio.create_task(
+            forwarding_manager.process_forward_request(
+                update=update,
+                context=context,
+                request_data=request_info['data'],
+                original_message=update.message.reply_to_message,
+                job_id=job_id
+            )
         )
         
         # Clear pending request
@@ -287,17 +302,20 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
-    # Cancel forwarding if active
-    if forwarding_manager.active_jobs.get(user_id):
-        forwarding_manager.active_jobs[user_id] = False
-        await update.message.reply_text("🛑 Forwarding cancelled.")
-    else:
-        # Clear pending request
+    # Cancel all user's forwarding jobs
+    cancelled = False
+    for uid in list(forwarding_manager.active_jobs.keys()):
+        if uid == user_id and forwarding_manager.active_jobs.get(uid):
+            forwarding_manager.active_jobs[uid] = False
+            cancelled = True
+    
+    if cancelled:
+        # Clear pending request if exists
         if user_id in pending_requests:
             del pending_requests[user_id]
-            await update.message.reply_text("🗑️ Pending request cleared.")
-        else:
-            await update.message.reply_text("ℹ️ No active job or pending request found.")
+        await update.message.reply_text("🛑 All your forwarding jobs cancelled.")
+    else:
+        await update.message.reply_text("ℹ️ No active forwarding jobs found.")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show statistics"""
@@ -339,6 +357,50 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
 
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current status of user's jobs"""
+    if update.effective_chat.type != "private":
+        return
+    
+    user_id = update.effective_user.id
+    
+    if not is_authorized(user_id):
+        await update.message.reply_text("❌ You are not authorized.")
+        return
+    
+    from pymongo import MongoClient
+    from config import MONGO_URI, DB_NAME
+    from datetime import datetime, timezone
+    
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    col_jobs = db["forward_jobs"]
+    
+    # Get active jobs
+    user_jobs = list(col_jobs.find({
+        "user_id": user_id,
+        "status": {"$in": ["started", "processing"]}
+    }).sort("start_time", -1).limit(5))
+    
+    if not user_jobs:
+        await update.message.reply_text("ℹ️ No active jobs found.")
+        return
+    
+    status_text = "🔄 *Your Active Jobs*\n\n"
+    
+    for job in user_jobs:
+        elapsed = (datetime.now(timezone.utc) - job.get('start_time', datetime.now(timezone.utc))).seconds
+        status_text += f"• Job ID: `{job.get('_id', 'N/A')}`\n"
+        status_text += f"  Status: {job.get('status', 'Unknown')}\n"
+        status_text += f"  Running: {elapsed} seconds\n"
+        status_text += f"  Progress: {job.get('progress', '0')}%\n\n"
+    
+    # Count active jobs
+    active_count = sum(1 for uid, job in forwarding_manager.active_jobs.items() if uid == user_id and job)
+    status_text += f"*Active tasks:* {active_count}/3"
+    
+    await update.message.reply_text(status_text, parse_mode=ParseMode.MARKDOWN)
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors"""
     logger.error(f"Update {update} caused error {context.error}")
@@ -353,6 +415,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Main function to start the bot"""
+    import asyncio
+    
     # Start health check server (for Render)
     port = start_health_server()
     
@@ -364,19 +428,23 @@ def main():
     # Create application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Add command handlers
+    # Add command handlers (order matters - add specific commands first)
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("forward", forward_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
     
     # Add auth handlers
     for handler in get_auth_handlers():
         app.add_handler(handler)
     
-    # Add message handler for forward requests
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message))
+    # Add message handler for forward requests (must be after command handlers)
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, 
+        handle_message
+    ))
     
     # Add error handler
     app.add_error_handler(error_handler)
@@ -385,7 +453,8 @@ def main():
     logger.info("Bot is starting...")
     print("=" * 50)
     print("🤖 Telegram Forward Bot Started!")
-    print(f"PORT: {port}")
+    print("✅ Features: Multi-tasking, Auto-pin, Fixed Commands")
+    print(f"📍 PORT: {port}")
     print("=" * 50)
     
     try:
