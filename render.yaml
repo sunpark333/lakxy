@@ -13,7 +13,5 @@ services:
         sync: false
       - key: LOG_CHANNEL
         sync: false
-      - key: PYTHON_VERSION
-        value: 3.11.0
-    healthCheckPath: /health
+    healthCheckPath: /ping
     autoDeploy: true
