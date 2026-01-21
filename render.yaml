@@ -15,3 +15,4 @@ services:
         sync: false
     healthCheckPath: /ping
     autoDeploy: true
+    plan: free
